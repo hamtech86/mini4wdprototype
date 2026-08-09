@@ -1,0 +1,256 @@
+#include <Wire.h>
+#include <Adafruit_INA3221.h>
+
+// ------------------------
+// INA3221
+// ------------------------
+Adafruit_INA3221 ina;
+
+const float SHUNT_RESISTOR = 0.02;
+const int INA_CHANNEL = 1;
+
+// ------------------------
+// Battery voltage
+// ------------------------
+#define BATTERY_PIN A0
+
+const float R1 = 10000.0;
+const float R2 = 10000.0;
+const float VREF = 5.0;
+
+// ------------------------
+// Discharge control
+// ------------------------
+const int PWM_PIN = 5;
+
+const float TARGET_CURRENT = 5.0;
+const float VOLTAGE_CUTOFF = 0.9;
+
+const float Kp = 25.0;
+
+bool autoControl = false;
+
+int pwmValue = 0;
+int state = 0;
+
+// 0 = idle
+// 1 = discharge
+// 2 = finished
+// 3 = pause
+
+// cutoff stability
+const int CUTOFF_COUNT = 5;
+int cutoffCounter = 0;
+
+// time
+unsigned long startTime = 0;
+
+// ------------------------
+// battery voltage read
+// ------------------------
+float readBatteryVoltage()
+{
+  long sum = 0;
+
+  for (int i = 0; i < 10; i++)
+  {
+    sum += analogRead(BATTERY_PIN);
+  }
+
+  float adc = sum / 10.0;
+
+  float voltage =
+    (adc / 1023.0) * VREF * (R1 + R2) / R2;
+
+  return voltage;
+}
+
+// ------------------------
+// setup
+// ------------------------
+void setup()
+{
+  Serial.begin(115200);
+
+  pinMode(PWM_PIN, OUTPUT);
+
+  Wire.begin();
+
+  ina.begin();
+
+  Serial.println("READY");
+}
+
+// ------------------------
+// loop
+// ------------------------
+void loop()
+{
+  unsigned long now = millis();
+  unsigned long elapsed = (now - startTime) / 1000;
+
+  float batteryVoltage = readBatteryVoltage();
+
+  float shuntVoltage =
+    ina.getShuntVoltage_mV(INA_CHANNEL) / 1000.0;
+
+  float current =
+    shuntVoltage / SHUNT_RESISTOR;
+
+  float power =
+    batteryVoltage * current;
+
+  // ------------------------
+  // serial command
+  // ------------------------
+  if (Serial.available())
+  {
+    String cmd = Serial.readStringUntil('\n');
+
+    cmd.trim();
+
+    if (cmd == "START")
+    {
+      autoControl = true;
+      state = 1;
+      pwmValue = 0;
+      cutoffCounter = 0;
+      startTime = millis();
+    }
+
+    if (cmd == "STOP")
+    {
+      autoControl = false;
+      pwmValue = 0;
+      state = 0;
+    }
+
+    if (cmd == "PAUSE")
+    {
+      state = 3;
+      pwmValue = 0;
+    }
+
+    if (cmd == "RESUME")
+    {
+      state = 1;
+    }
+  }
+
+  // ------------------------
+  // discharge control
+  // ------------------------
+  if (autoControl && state == 1)
+  {
+    if (batteryVoltage > VOLTAGE_CUTOFF)
+    {
+      cutoffCounter = 0;
+
+      float error = TARGET_CURRENT - current;
+
+      pwmValue += (int)(Kp * error);
+
+      if (pwmValue > 255) pwmValue = 255;
+      if (pwmValue < 0) pwmValue = 0;
+    }
+    else
+    {
+      cutoffCounter++;
+
+      if (cutoffCounter >= CUTOFF_COUNT)
+      {
+        pwmValue = 0;
+        state = 2;
+      }
+    }
+
+    analogWrite(PWM_PIN, pwmValue);
+  }
+
+  if (state != 1)
+  {
+    analogWrite(PWM_PIN, pwmValue);
+  }
+
+  // ------------------------
+  // DATA OUTPUT
+  // ------------------------
+  Serial.print("DATA,");
+  Serial.print(elapsed);
+  Serial.print(",");
+  Serial.print(batteryVoltage, 3);
+  Serial.print(",");
+  Serial.print(current, 3);
+  Serial.print(",");
+  Serial.print(power, 3);
+  Serial.print(",");
+  Serial.print(pwmValue);
+  Serial.print(",");
+  Serial.println(state);
+
+  delay(200);
+}
+出力フォーマット（UI互換）
+例
+コードをコピーする
+
+DATA,12,1.245,4.981,6.205,132,1
+意味
+項目
+内容
+12
+放電時間（秒）
+1.245
+電池電圧
+4.981
+電流
+6.205
+電力
+132
+PWM
+1
+state
+state意味
+値
+意味
+0
+停止
+1
+放電
+2
+放電終了
+3
+一時停止
+β4で確認してほしいポイント
+テスト項目
+① 電圧精度
+テスターと比較
+② 電流安定
+目標
+コードをコピーする
+
+5A ±0.2A
+③ cutoff
+期待
+コードをコピーする
+
+0.90V付近
+④ UI
+Mode1グラフ
+時間進行
+pause動作
+もしよければ次に（かなり重要）
+β4テスト後、
+ミニ四駆電池評価として一番重要な機能を追加できます。
+実はあなたの装置はもう少しで
+電池性能ランキング装置
+になります。
+追加できる機能
+放電容量 mAh
+平均電圧
+内部抵抗推定
+電池スコア
+これを Mode2の評価ロジックに入れられます。
+必要なら
+PSバージョン設計を崩さずに追加する方法も整理します。
+

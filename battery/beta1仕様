@@ -1,0 +1,155 @@
+
+条件整理
+
+MOSFET：PWMで放電電流制御
+
+PWMピン：D5（例）
+
+LED：WS2812B 1個、D6ピン
+
+電流計測：INA3221、外付け0.02Ωシャント
+
+バッテリー電圧：分圧回路（10kΩ×2）、A0ピン
+
+目標電流：5A ±0.2A
+
+放電終了：0.9V
+
+終了警告：0.95V以下でLED点滅
+
+シリアルモニター：電圧、電流、PWM値表示
+
+Arduino統合コード（PWM制御＋LED表示）
+#include <Wire.h>
+#include <Adafruit_INA3221.h>
+#include <Adafruit_NeoPixel.h>
+
+// ------------------------
+// INA3221設定
+// ------------------------
+Adafruit_INA3221 ina;           // v1.0.3 引数なし
+const float SHUNT_RESISTOR = 0.02;  // 外付けシャント抵抗
+const int INA_CHANNEL = 2;          // 使用チャンネル
+
+// ------------------------
+// WS2812B設定
+// ------------------------
+#define LED_PIN    6
+#define NUM_LEDS   1
+Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+
+// ------------------------
+// MOSFET制御
+// ------------------------
+#define PWM_PIN    5
+int pwmValue = 128; // 初期PWM (0-255)
+
+// ------------------------
+// バッテリー電圧測定
+// ------------------------
+#define BATTERY_PIN A0
+const float R1 = 10000.0;  // 分圧上側
+const float R2 = 10000.0;  // 分圧下側
+const float VREF = 5.0;    // ADC基準電圧
+
+// ------------------------
+// 放電条件
+// ------------------------
+const float TARGET_CURRENT = 5.0;      // 目標電流[A]
+const float CURRENT_TOL = 0.2;         // 許容範囲
+const float VOLTAGE_CUTOFF = 0.9;      // 放電終了電圧[V]
+const float VOLTAGE_WARN = 0.95;       // 放電終了警告[V]
+
+// ------------------------
+// 制御パラメータ
+// ------------------------
+const float Kp = 25.0;  // PWM比例ゲイン
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin();
+
+  if (!ina.begin()) {
+    Serial.println("INA3221 not found!");
+    while (1);
+  }
+
+  strip.begin();
+  strip.show(); // LED初期化
+  pinMode(PWM_PIN, OUTPUT);
+  analogWrite(PWM_PIN, pwmValue);
+  
+  Serial.println("放電監視 + PWM制御開始");
+}
+
+void loop() {
+  // ------------------------
+  // 電流計測
+  // ------------------------
+  float shuntVoltage = ina.getShuntVoltage(INA_CHANNEL); // V
+  float current = shuntVoltage / SHUNT_RESISTOR;        // A
+
+  // ------------------------
+  // 電圧計測
+  // ------------------------
+  int adcValue = analogRead(BATTERY_PIN);
+  float batteryVoltage = ((float)adcValue / 1023.0) * VREF * (R1 + R2) / R2;
+
+  // ------------------------
+  // PWM制御（比例制御）
+  // ------------------------
+  if (batteryVoltage > VOLTAGE_CUTOFF) { // 放電終了でなければ
+    float error = TARGET_CURRENT - current;
+    pwmValue += (int)(Kp * error);  // 単純比例制御
+    if (pwmValue > 255) pwmValue = 255;
+    if (pwmValue < 0) pwmValue = 0;
+    analogWrite(PWM_PIN, pwmValue);
+  } else {
+    pwmValue = 0;
+    analogWrite(PWM_PIN, pwmValue);
+  }
+
+  // ------------------------
+  // LED表示
+  // ------------------------
+  if (batteryVoltage <= VOLTAGE_CUTOFF) {
+    // 放電完了 → 緑
+    strip.setPixelColor(0, strip.Color(0, 255, 0));
+  } else if (batteryVoltage <= VOLTAGE_WARN) {
+    // 終了警告 → 点滅青
+    static bool blink = false;
+    blink = !blink;
+    if (blink) strip.setPixelColor(0, strip.Color(0, 0, 255));
+    else strip.setPixelColor(0, strip.Color(0, 0, 0));
+  } else {
+    // 放電中 → 電流状態で赤/黄色/青
+    if (current > TARGET_CURRENT + CURRENT_TOL) {
+      strip.setPixelColor(0, strip.Color(255, 0, 0)); // 過大
+    } else if (current < TARGET_CURRENT - CURRENT_TOL) {
+      strip.setPixelColor(0, strip.Color(0, 0, 255)); // 過小
+    } else {
+      strip.setPixelColor(0, strip.Color(255, 255, 0)); // 目標
+    }
+  }
+  strip.show();
+
+  // ------------------------
+  // シリアル出力
+  // ------------------------
+  Serial.print("Battery[V]: "); Serial.print(batteryVoltage, 2);
+  Serial.print(" | Bus[V]: "); Serial.print(shuntVoltage + batteryVoltage, 2); // おおよそ
+  Serial.print(" | Shunt[V]: "); Serial.print(shuntVoltage, 3);
+  Serial.print(" | Current[A]: "); Serial.print(current, 2);
+  Serial.print(" | PWM: "); Serial.println(pwmValue);
+
+  delay(500);
+}
+✅ ポイント
+
+PWM比例制御で5A付近を維持
+
+LED表示で放電中・放電終了近接・完了を判別
+
+バッテリー電圧は分圧A0から取得
+
+INA3221でシャント抵抗電流測定

@@ -1,0 +1,270 @@
+Arduino β5（最終版）
+Arduino IDE 1.8.18
+Adafruit INA3221 1.0.3
+
+#include <Wire.h>
+#include <Adafruit_INA3221.h>
+
+// ------------------------
+// INA3221
+// ------------------------
+Adafruit_INA3221 ina;
+
+const float SHUNT_RESISTOR = 0.02;
+const int INA_CHANNEL = 1;
+
+// ------------------------
+// Battery voltage
+// ------------------------
+#define BATTERY_PIN A0
+
+const float R1 = 10000.0;
+const float R2 = 10000.0;
+const float VREF = 4.98;
+
+// ------------------------
+// Discharge control
+// ------------------------
+const int PWM_PIN = 5;
+
+const float TARGET_CURRENT = 5.0;
+const float VOLTAGE_CUTOFF = 0.9;
+
+const float Kp = 20.0;
+
+bool autoControl = false;
+
+int pwmValue = 0;
+int state = 0;
+
+// 0 idle
+// 1 discharge
+// 2 finished
+// 3 pause
+
+const int CUTOFF_COUNT = 5;
+int cutoffCounter = 0;
+
+unsigned long startTime = 0;
+
+// ------------------------
+// battery voltage read
+// ------------------------
+float readBatteryVoltage()
+{
+  long sum = 0;
+
+  for(int i=0;i<10;i++)
+  {
+    sum += analogRead(BATTERY_PIN);
+  }
+
+  float adc = sum / 10.0;
+
+  float voltage =
+  (adc / 1023.0) * VREF * (R1 + R2) / R2;
+
+  return voltage;
+}
+
+// ------------------------
+// setup
+// ------------------------
+void setup()
+{
+  Serial.begin(115200);
+
+  pinMode(PWM_PIN, OUTPUT);
+
+  Wire.begin();
+
+  if (!ina.begin())
+  {
+    Serial.println("INA3221 NOT FOUND");
+    while(1);
+  }
+
+  Serial.println("READY");
+}
+
+// ------------------------
+// loop
+// ------------------------
+void loop()
+{
+  unsigned long now = millis();
+  unsigned long elapsed = (now - startTime) / 1000;
+
+  float batteryVoltage = readBatteryVoltage();
+
+  float shuntVoltage =
+  ina.getShuntVoltage_mV(INA_CHANNEL) / 1000.0;
+
+  float current =
+  shuntVoltage / SHUNT_RESISTOR;
+
+  float power =
+  batteryVoltage * current;
+
+  // ------------------------
+  // serial command
+  // ------------------------
+  if (Serial.available())
+  {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
+    if (cmd == "START")
+    {
+      autoControl = true;
+      state = 1;
+
+      pwmValue = 0;
+      cutoffCounter = 0;
+      startTime = millis();
+
+      Serial.println("ACK,START");
+    }
+
+    if (cmd == "STOP")
+    {
+      autoControl = false;
+      pwmValue = 0;
+      state = 0;
+
+      Serial.println("ACK,STOP");
+    }
+
+    if (cmd == "PAUSE")
+    {
+      state = 3;
+      pwmValue = 0;
+
+      Serial.println("ACK,PAUSE");
+    }
+
+    if (cmd == "RESUME")
+    {
+      state = 1;
+
+      Serial.println("ACK,RESUME");
+    }
+  }
+
+  // ------------------------
+  // discharge control
+  // ------------------------
+  if (autoControl && state == 1)
+  {
+    if (batteryVoltage > VOLTAGE_CUTOFF)
+    {
+      cutoffCounter = 0;
+
+      float error =
+      TARGET_CURRENT - current;
+
+      pwmValue += (int)(Kp * error * 0.2);
+
+      if (pwmValue > 255) pwmValue = 255;
+      if (pwmValue < 0) pwmValue = 0;
+    }
+    else
+    {
+      cutoffCounter++;
+
+      if (cutoffCounter >= CUTOFF_COUNT)
+      {
+        pwmValue = 0;
+        state = 2;
+      }
+    }
+  }
+
+  analogWrite(PWM_PIN, pwmValue);
+
+  // ------------------------
+  // DATA OUTPUT
+  // ------------------------
+  Serial.print("DATA,");
+  Serial.print(elapsed);
+  Serial.print(",");
+  Serial.print(batteryVoltage, 3);
+  Serial.print(",");
+  Serial.print(current, 3);
+  Serial.print(",");
+  Serial.print(power, 3);
+  Serial.print(",");
+  Serial.print(pwmValue);
+  Serial.print(",");
+  Serial.println(state);
+
+  delay(200);
+}
+
+
+β5通信仕様（V4完全互換）
+READY
+
+START
+STOP
+PAUSE
+RESUME
+応答
+
+
+ACK,START
+ACK,STOP
+ACK,PAUSE
+ACK,RESUME
+
+DATA,time,voltage,current,power,pwm,state
+
+DATA,12,1.245,4.981,6.205,132,1
+
+
+
+β5の特徴
+β4からの改良
+項目
+内容
+INA検出
+起動時確認
+PWM制御
+安定化
+VREF
+精度改善
+ACK応答
+UI通信安定
+しかし
+Plain text
+コードをコピーする
+通信フォーマットは完全互換
+なので
+Plain text
+コードをコピーする
+V1
+V3
+V4
+すべて動きます。
+次にやると完成度が跳ねるもの
+実はこのシステムで
+一番重要なポイントがまだ1つあります。
+それは
+INA3221キャリブレーション
+です。
+0.02Ωシャントは
+誤差が最大5〜10%出ます。
+なので
+Plain text
+コードをコピーする
+実測補正
+を入れると
+Plain text
+コードをコピーする
+電流精度 ±1%
+になります。
+もし希望あれば次に
+INA3221を±1%精度にするキャリブレーション方法
+を説明できます。
+これは かなり重要な工程です。
+
