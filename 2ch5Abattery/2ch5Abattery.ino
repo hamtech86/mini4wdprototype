@@ -35,10 +35,22 @@ struct Channel
     int stopReason;
 
     unsigned long startTime;
+    unsigned long elapsedMs;
 };
 
 Channel ch1;
 Channel ch2;
+
+//==================================================
+// ELAPSED TIME
+//==================================================
+
+// The discharge clock advances only while the channel is RUNNING.
+// Unsigned subtraction keeps the calculation safe across millis() rollover.
+unsigned long getElapsedMs(const Channel &ch)
+{
+    return ch.running ? millis() - ch.startTime : ch.elapsedMs;
+}
 
 //==================================================
 // VOLTAGE
@@ -114,19 +126,20 @@ void updateChannel(Channel &ch)
     float current =
         readCurrent(ch.inaChannel);
 
-    float elapsed =
-        (millis() - ch.startTime) / 1000.0f;
+    unsigned long elapsed =
+        getElapsedMs(ch);
 
     if (ch.running)
     {
         if (voltage <= VOLTAGE_CUTOFF)
         {
+            ch.elapsedMs = elapsed;
             ch.running = false;
             ch.stopReason = 1;
         }
-
-        if (elapsed >= TIMEOUT_SEC)
+        else if (elapsed >= TIMEOUT_SEC * 1000UL)
         {
+            ch.elapsedMs = elapsed;
             ch.running = false;
             ch.stopReason = 2;
         }
@@ -190,7 +203,7 @@ void sendData(Channel &ch, const char *name)
         ina.getShuntVoltage(ch.inaChannel);
 
     unsigned long elapsed =
-        millis() - ch.startTime;
+        getElapsedMs(ch);
 
     Serial.print("DEBUG,");
     Serial.print(name);
@@ -214,7 +227,6 @@ void sendData(Channel &ch, const char *name)
     Serial.println(getState(ch));
 }
 
-
 //==================================================
 // COMMANDS
 //==================================================
@@ -224,13 +236,24 @@ void startChannel(Channel &ch)
     ch.running = true;
     ch.stopReason = 0;
     ch.pwmValue = 0;
+    ch.elapsedMs = 0;
     ch.startTime = millis();
 }
 
 void stopChannel(Channel &ch)
 {
+    if (ch.running)
+    {
+        ch.elapsedMs = millis() - ch.startTime;
+    }
+
     ch.running = false;
+    ch.stopReason = 3;
     ch.pwmValue = 0;
+
+    // Apply the output-off command immediately rather than waiting for
+    // the next channel update pass.
+    analogWrite(ch.pwmPin, 0);
 }
 
 void processCommand(String cmd)
@@ -316,6 +339,15 @@ void setup()
 
     ch1.pwmValue = 0;
     ch2.pwmValue = 0;
+
+    ch1.stopReason = 0;
+    ch2.stopReason = 0;
+
+    ch1.startTime = 0;
+    ch2.startTime = 0;
+
+    ch1.elapsedMs = 0;
+    ch2.elapsedMs = 0;
 
     pinMode(ch1.pwmPin, OUTPUT);
     pinMode(ch2.pwmPin, OUTPUT);
