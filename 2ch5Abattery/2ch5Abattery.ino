@@ -245,10 +245,11 @@ void stopChannel(Channel &ch)
     if (ch.running)
     {
         ch.elapsedMs = millis() - ch.startTime;
+        ch.stopReason = 3;
     }
 
+    // Preserve COMPLETE/TIMEOUT when STOP is repeated after automatic stop.
     ch.running = false;
-    ch.stopReason = 3;
     ch.pwmValue = 0;
 
     // Apply the output-off command immediately rather than waiting for
